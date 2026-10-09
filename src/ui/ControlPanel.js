@@ -18,7 +18,7 @@ const $ = (id) => document.getElementById(id);
 export class ControlPanel {
   /**
    * @param {InductionMotorModel} model  physics core (already constructed)
-   * @param {{onCutaway, onExplode, onVisibility}} hooks 3D-side callbacks
+   * @param {{onCutaway, onExplode, onJumper, onVisibility}} hooks 3D-side callbacks
    */
   constructor(model, hooks) {
     this.model = model;
@@ -78,6 +78,7 @@ export class ControlPanel {
       this._setSequence(0);
     });
     $('cutaway').addEventListener('change', (e) => this.hooks.onCutaway(e.target.value));
+    $('jumper').addEventListener('change', (e) => this.hooks.onJumper(e.target.value));
   }
 
   _bindToggles() {

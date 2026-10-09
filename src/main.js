@@ -95,6 +95,7 @@ const model = new InductionMotorModel();
 const hooks = {
   onCutaway: (mode) => motor3d.setCutaway(mode),
   onExplode: (f) => motor3d.setExplode(f),
+  onJumper: (mode) => motor3d.setJumper(mode),
   onVisibility: (name, on) => {
     switch (name) {
       case 'casing':  motor3d.housing.visible = on; break;
@@ -111,6 +112,14 @@ const hooks = {
 const panel = new ControlPanel(model, hooks);
 // apply the default cutaway (90°) chosen in the HTML
 motor3d.setCutaway(document.getElementById('cutaway').value);
+
+// ---- UI event isolation ------------------------------------------------------
+// Panel interactions (sliders, wheel, keys) must never reach the canvas /
+// OrbitControls — stop propagation at the aside container.
+const asideEl = document.querySelector('aside');
+['pointerdown', 'pointerup', 'wheel', 'keydown'].forEach((evt) => {
+  asideEl.addEventListener(evt, (e) => e.stopPropagation());
+});
 
 // ---- resize ------------------------------------------------------------------
 function resize() {
@@ -144,7 +153,7 @@ function frame() {
   // wound-rotor slip rings spin with the rotor automatically (children of rotor)
 
   // vector layers + emissive windings
-  viz.update(model, panel.animSpeed);
+  viz.update(model, panel.animSpeed, dtWall);
 
   // RMF loops sit centred in the air gap plane, facing camera-neutral XY
   viz.rmf.position.z = 0.0;

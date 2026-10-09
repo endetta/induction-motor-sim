@@ -126,6 +126,14 @@ describe('stator current', () => {
     expect(I0).toBeGreaterThan(0);
     expect(I0).toBeLessThan(statorCurrent(1, p) / 3);
   });
+  it('s = 0 does not produce NaN — clamped to the no-load limit', () => {
+    // At synchronous speed the rotor branch opens (Rr/s → ∞); the exact
+    // complex division must stay finite, matching the s→0⁺ limit.
+    const I0 = statorCurrent(1e-4, p);
+    expect(statorCurrent(0, p)).toBeCloseTo(I0, 6);
+    expect(Number.isFinite(statorCurrent(0, p))).toBe(true);
+    expect(statorCurrent(-0, p)).toBeCloseTo(I0, 6);
+  });
   it('operating slip is small (< 8%) — rated region near pull-out-adjacent load', () => {
     expect(sRated).toBeLessThan(0.08);
     expect(sRated).toBeGreaterThan(0.005);
@@ -340,9 +348,9 @@ describe('stop / brake / reset', () => {
 
 describe('per-bar model (visualization layer)', () => {
   it('bar current amplitude = s·E0/√(Rr² + (s·Xr)²) — no NaN, peaks at s=1', () => {
-    // Sample against FROZEN slip (direct time advance) so the analytic
-    // amplitude comparison is exact — stepping would let slip decay and
-    // contaminate the amplitude envelope.
+    // Sample against FROZEN slip. barCurrents() uses the INTEGRATED phase
+    // theta_rot_elec (updated only in _subStep), so advance it directly at
+    // dθ = s·ωe·dt to hold the amplitude analytic and exact.
     const m = new InductionMotorModel();
     const { Xr } = reactances(m.params);
     const expectedAtSlip = (s) => (s * m.barEmf0) / Math.hypot(m.params.Rr, s * Xr);
@@ -350,7 +358,10 @@ describe('per-bar model (visualization layer)', () => {
     m.state = MotorState.RUNNING;
     m.slip = 1;
     const s1 = [];
-    for (let i = 0; i < 2000; i++) { m.time += 0.0001; s1.push(Math.abs(m.barCurrents(th)[0])); }
+    for (let i = 0; i < 2000; i++) {
+      m.theta_rot_elec = (m.theta_rot_elec + 1 * m.omega_e * 0.0001) % (2 * Math.PI);
+      s1.push(Math.abs(m.barCurrents(th)[0]));
+    }
     expect(s1.every((v) => Number.isFinite(v))).toBe(true);
     // sampled max sits just under the analytic peak (0.1 ms grid) but within 0.01%
     expect(Math.max(...s1)).toBeLessThanOrEqual(expectedAtSlip(1) + 1e-6);
@@ -359,7 +370,10 @@ describe('per-bar model (visualization layer)', () => {
     // so the amplitude ratio is the analytic 0.663, not 0.5.
     m.slip = 0.5;
     const s2 = [];
-    for (let i = 0; i < 2000; i++) { m.time += 0.0002; s2.push(Math.abs(m.barCurrents(th)[0])); }
+    for (let i = 0; i < 2000; i++) {
+      m.theta_rot_elec = (m.theta_rot_elec + 0.5 * m.omega_e * 0.0002) % (2 * Math.PI);
+      s2.push(Math.abs(m.barCurrents(th)[0]));
+    }
     const ratio = Math.max(...s2) / Math.max(...s1);
     expect(ratio).toBeCloseTo(expectedAtSlip(0.5) / expectedAtSlip(1), 3);
   });
@@ -401,5 +415,31 @@ describe('per-bar model (visualization layer)', () => {
     expect(ir.length).toBe(m.params.nBars);
     expect(ir.every((v) => Number.isFinite(v))).toBe(true);
     expect(Number.isFinite(m.discreteTorque())).toBe(true);
+  });
+  it('integrated rotor phase: bar frequency ≈ s·f_e through the transient', () => {
+    // Phase is ∫s·ωe dt, so during run-up the bar-current oscillation rate
+    // must track the instantaneous s·f (which falls from 50 Hz toward ~1 Hz),
+    // not the s(t)·ωe·t pseudo-frequency that blows up as t grows.
+    // Use BRAKING-free manual slip freeze: set slip directly and advance the
+    // integrated phase at dθ = s·ωe·dt (exactly what _subStep does), then
+    // verify barCurrents() oscillates at s·f_e — no pseudo-frequency blow-up.
+    const m = new InductionMotorModel();
+    m.state = MotorState.RUNNING;
+    const sMid = 0.6;                               // arbitrary high-slip point
+    m.slip = sMid;
+    for (let i = 0; i < 300; i++) {                 // prime the phase accumulator
+      m.theta_rot_elec = (m.theta_rot_elec + sMid * m.omega_e * 0.001) % (2 * Math.PI);
+    }
+    let crossings = 0, prev = m.barCurrents([0])[0];
+    const dt = 0.0002;                              // 0.1 s window
+    for (let i = 0; i < 500; i++) {
+      m.theta_rot_elec = (m.theta_rot_elec + sMid * m.omega_e * dt) % (2 * Math.PI);
+      const cur = m.barCurrents([0])[0];
+      if (Math.sign(cur) !== Math.sign(prev)) crossings++;
+      prev = cur;
+    }
+    const fMeas = crossings / 2 / (500 * dt);       // Hz
+    expect(fMeas).toBeGreaterThan(0.8 * sMid * m.params.f);
+    expect(fMeas).toBeLessThan(1.2 * sMid * m.params.f);
   });
 });

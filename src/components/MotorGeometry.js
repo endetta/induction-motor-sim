@@ -54,6 +54,23 @@ export const PHASE_COLORS = {
   C: 0x2b62b8, // biru
 };
 
+/** Procedural lamination texture: thin silicon-steel plate stack, 2×16 px
+ *  canvas repeated along the core axis. No external image to load. */
+function laminationTexture(repeatY = 40) {
+  const c = document.createElement('canvas');
+  c.width = 2; c.height = 16;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#4a4e52';                    // silicon-steel base
+  ctx.fillRect(0, 0, 2, 16);
+  ctx.fillStyle = '#1e2022';                    // inter-lamination insulation line
+  for (let y = 0; y < 16; y += 2) ctx.fillRect(0, y, 2, 1);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, repeatY);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 /** Materials shared across the build. Clipped ones receive the cutaway planes. */
 function makeMaterials() {
   const std = (color, metalness, roughness, extra = {}) =>
@@ -67,8 +84,8 @@ function makeMaterials() {
     foot:    std(0x6b7480, 0.30, 0.55),
     shield:  std(0xa7b0ba, 0.30, 0.40),
     termBox: std(0x7d8794, 0.20, 0.50),    pin: std(0xd4af37, 1.0, 0.3),
-    core:    std(0x8c96a4, 0.70, 0.50),                     // laminated stator
-    rotorCore: std(0x79828d, 0.70, 0.55),
+    core:    std(0x8c96a4, 0.70, 0.50, { map: laminationTexture(60) }),   // laminated stator
+    rotorCore: std(0x79828d, 0.70, 0.55, { map: laminationTexture(45) }),
     bar:     std(0xcf8440, 0.90, 0.30),                      // copper cage bar
     ring:    std(0xe09a52, 0.90, 0.28),                      // copper end ring
     shaft:   std(0xc9d1da, 0.90, 0.20),
@@ -270,10 +287,17 @@ export function buildMotor(rotorType = 'cage') {
       rotorExtras.slipRings.add(mesh);
     }
   }
-  // shaft through the whole machine
+  // shaft through the whole machine — with a keyway (power-transmission groove)
   const shaftGeo = new THREE.CylinderGeometry(SHAFT_R, SHAFT_R, CASING_LEN + 0.18, 24);
   shaftGeo.rotateX(Math.PI / 2);
   rotor.add(new THREE.Mesh(shaftGeo, mats.shaft));
+  const keyLen = CASING_LEN + 0.06;               // keyway: shallow rectangular groove
+  const keyway = new THREE.Mesh(
+    new THREE.BoxGeometry(0.006, 0.004, keyLen),
+    new THREE.MeshStandardMaterial({ color: 0x3a4048, metalness: 0.6, roughness: 0.6 }),
+  );
+  keyway.position.set(0, SHAFT_R - 0.001, 0);
+  rotor.add(keyway);
   root.add(rotor);
 
   // ---- housing: casing shell, fins, feet, end shields, terminal box --------
@@ -345,6 +369,33 @@ export function buildMotor(rotorType = 'cage') {
   termBox.add(new THREE.Mesh(mergeGeometries(pinGeos), mats.pin));
   housing.add(termBox);
 
+  // ---- fan cowl + centrifugal fan on the non-drive end (rear, −Z) -----------
+  const cowl = new THREE.Group();
+  const shroud = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.095, CASING_R * 0.92, 0.075, 32, 1, true),
+    mats.fin,
+  );
+  shroud.rotateX(Math.PI / 2);
+  shroud.position.z = -CASING_LEN / 2 - 0.048;
+  cowl.add(shroud);
+  const cowlBack = new THREE.Mesh(new THREE.SphereGeometry(0.095, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), mats.fin);
+  cowlBack.rotateX(-Math.PI / 2);
+  cowlBack.position.z = -CASING_LEN / 2 - 0.085;
+  cowl.add(cowlBack);
+  // fan blades: 7 flat vanes angled off the rear shaft hub
+  const bladeGeos = [];
+  for (let k = 0; k < 7; k++) {
+    const g = new THREE.BoxGeometry(0.030, 0.062, 0.004);
+    g.rotateX(Math.PI / 6);
+    g.translate(0, 0.048, 0);
+    g.rotateZ((2 * Math.PI * k) / 7);
+    bladeGeos.push(g);
+  }
+  const fan = new THREE.Mesh(mergeGeometries(bladeGeos), mats.foot);
+  fan.position.z = -CASING_LEN / 2 - 0.060;
+  rotor.add(fan);                                  // spins with the rotor
+  housing.add(cowl);
+
   // ---- brushes for the wound rotor (stationary → on the rear shield) -------
   if (rotorType === 'wound') {
     const brushes = new THREE.Group();
@@ -358,6 +409,27 @@ export function buildMotor(rotorType = 'cage') {
     }
     shieldRear.add(brushes);
   }
+
+  // Brass jumper plates — Star (Y): one bar bridging the top row (U2-V2-W2);
+  // Delta (Δ): three vertical bars pin-row to pin-row. Swappable at runtime.
+  const jumperBrass = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 1.0, roughness: 0.3 });
+  function jumperPlates(mode) {
+    const geos = [];
+    if (mode === 'delta') {
+      for (let c = 0; c < 3; c++) {
+        const g = new THREE.BoxGeometry(0.010, 0.028, 0.005);
+        g.translate(-0.018 + c * 0.018, CASING_R + 0.064, 0.055);
+        geos.push(g);
+      }
+    } else {
+      const g = new THREE.BoxGeometry(0.052, 0.005, 0.008);
+      g.translate(0, CASING_R + 0.073, 0.072);
+      geos.push(g);
+    }
+    return new THREE.Mesh(mergeGeometries(geos), jumperBrass);
+  }
+  const jumper = jumperPlates('star');
+  termBox.add(jumper);
 
   // ---- cutaway clipping -----------------------------------------------------
   const planeA = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0);
@@ -399,7 +471,13 @@ export function buildMotor(rotorType = 'cage') {
   return {
     root, rotor, stator, housing, shieldFront, shieldRear, rotorExtras,
     phaseMats, mats,
-    setCutaway, setExplode,
+    setCutaway, setExplode, setJumper: (mode) => {
+      termBox.remove(jumper);
+      jumper.geometry.dispose();
+      const next = jumperPlates(mode);
+      jumper.geometry = next.geometry;
+      termBox.add(jumper);
+    },
     dims: { CORE_LEN, BAR_CIRCLE_R, BORE_R },
   };
 }

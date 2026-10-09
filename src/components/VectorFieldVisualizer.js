@@ -132,6 +132,34 @@ export class VectorFieldVisualizer {
     scene.add(wsRing);
     this.wsRing = wsRing;
 
+    // ---- L6: RMF flux particles — InstancedMesh riding the closed loops ----
+    // Built once, updated per frame via setMatrixAt only (zero allocation).
+    // Curves mirror the loop construction above (same points, stored for u→pos).
+    this.rmfCurves = [];
+    for (let i = 0; i < nLoops; i++) {
+      const scale = 1 - i * 0.16;
+      const pts = [];
+      const Rpole = 0.098 * scale, Rside = 0.055 * scale;
+      const SEG = 20;
+      for (let s = 0; s < SEG; s++) {
+        const a = (2 * Math.PI * s) / SEG;
+        pts.push(new THREE.Vector3(Rpole * Math.cos(a), Rside * Math.sin(a) * (0.35 + 0.65 * Math.abs(Math.cos(a))), 0));
+      }
+      this.rmfCurves.push(new THREE.CatmullRomCurve3(pts, true));
+    }
+    const N_PARTICLES = 120;
+    this.particleOffsets = [];
+    for (let i = 0; i < N_PARTICLES; i++) {
+      this.particleOffsets.push({ curveIdx: i % nLoops, u: i / N_PARTICLES });
+    }
+    this.particleMesh = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.0022, 6, 6),
+      new THREE.MeshBasicMaterial({ color: 0x0aa5cc, transparent: true, opacity: 0.9 }),
+      N_PARTICLES,
+    );
+    this.rmf.add(this.particleMesh);   // rotates with the field group
+    this._pDummy = new THREE.Object3D();
+
     // layer visibility state
     this.layers = { stator: true, rmf: true, barCurrent: true, force: true, speedRing: true };
   }
@@ -152,7 +180,7 @@ export class VectorFieldVisualizer {
    * @param {InductionMotorModel} motor
    * @param {number} animateScale  slow-motion multiplier applied by the caller
    */
-  update(motor, _animateScale = 1) {
+  update(motor, _animateScale = 1, dt = 1 / 60) {
     const p = motor.params;
     const thetaField = motor.omega_e * motor.time;   // RMF angle = ωe·t (mechanically ωs·t)
 
@@ -173,6 +201,22 @@ export class VectorFieldVisualizer {
     const polePairs = p.P / 2;
     const fieldAngle = motor.omega_e * motor.time / polePairs;
     this.rmf.rotation.z = fieldAngle;
+
+    // ---- L6: particles riding the closed flux loops -------------------------
+    // Speed ∝ gap flux density B_gap (denser/thicker field → faster dots).
+    if (this.layers.rmf) {
+      const speed = motor.Bm * 0.25;
+      const dummy = this._pDummy;
+      for (let i = 0; i < this.particleOffsets.length; i++) {
+        const po = this.particleOffsets[i];
+        po.u = (po.u + speed * dt) % 1.0;
+        const pt = this.rmfCurves[po.curveIdx].getPointAt(po.u);
+        dummy.position.copy(pt);
+        dummy.updateMatrix();
+        this.particleMesh.setMatrixAt(i, dummy.matrix);
+      }
+      this.particleMesh.instanceMatrix.needsUpdate = true;
+    }
 
     // ---- L3 + L4: per-bar current and force ---------------------------------
     if (this.layers.barCurrent || this.layers.force) {

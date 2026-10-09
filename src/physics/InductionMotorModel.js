@@ -172,8 +172,13 @@ export function klossConstants(p) {
  * Z_t = Rs + jXs + (jXm ∥ (Rr/s + jXr))  →  I = V_ph/|Z_t|.
  */
 export function statorCurrent(s, p) {
+  // s = 0 clamp: Rr/s would be ±Infinity and the complex division below turns
+  // it into NaN (Infinity/Infinity). At s → 0⁺ the rotor branch opens and the
+  // current falls to the magnetizing-dominated no-load value — clamping to
+  // 1e-4 reproduces that limit; the sign is preserved for s < 0 (generating).
+  const sSafe = Math.abs(s) < 1e-4 ? (s >= 0 ? 1e-4 : -1e-4) : s;
   const { Xs, Xr, Xm } = reactances(p);
-  const aR = p.Rr / s, aI = Xr;            // rotor branch Z2 = Rr/s + jXr
+  const aR = p.Rr / sSafe, aI = Xr;        // rotor branch Z2 = Rr/s + jXr
   // (jXm)·Z2 / (jXm + Z2), with jXm = (0, Xm): proper complex division.
   const nR = -Xm * aI, nI = Xm * aR;       // numerator (jXm)(Z2)
   const dR = aR, dI = aI + Xm;             // denominator (Z2 + jXm)
@@ -225,6 +230,10 @@ export class InductionMotorModel {
     this.Istator = 0;     // stator current magnitude (A)
     this.brakeTorque = 0; // braking torque magnitude (N·m) while BRAKING
     this.stalled = false; // true when breakaway torque < load torque at rest
+    // Integrated rotor electrical phase: θ_rot = ∫ s(t)·ωe dt. Phase from
+    // s(t)·ωe·t is only valid at constant slip — during run-up the ωe·t·ds/dt
+    // term distorts it, so the phase is accumulated in _subStep instead.
+    this.theta_rot_elec = 0;
     this.history = [];    // telemetry ring buffer [{t,wr,ws,s,I,Te}]
     this._accum = 0;      // fixed-step accumulator
   }
@@ -248,7 +257,9 @@ export class InductionMotorModel {
   get ratedCurrent() { return statorCurrent(operatingSlip(this.params), this.params); }
 
   /** Per-bar rotor currents (A) for bar angles θ_k.
-   *  i_r,k = (E_r/Z_r)·cos(s·ωe·t − φ_r − θ_k),  E_r = s·E_r0. */
+   *  i_r,k = (E_r/Z_r)·cos(θ_rot − φ_r − θ_k),  E_r = s·E_r0,
+   *  where θ_rot = ∫s·ωe dt is the INTEGRATED rotor electrical phase
+   *  (accumulated in _subStep — s(t)·ωe·t would only be valid at constant s). */
   barCurrents(thetaKs) {
     const { Xr } = reactances(this.params);   // leakage reactance at line freq
     const Rr = this.params.Rr;
@@ -257,7 +268,7 @@ export class InductionMotorModel {
     const Zr = Math.hypot(Rr, s * Xr);           // bar impedance at rotor freq s·f
     const phi = Math.atan2(s * Xr, Rr);          // emf → current lag
     const Im = Er / (Zr || 1e-9);
-    const wt = s * this.omega_e * this.time;     // rotor-frequency phase
+    const wt = this.theta_rot_elec;              // integrated rotor-frequency phase
     return thetaKs.map((thk) => Im * Math.cos(wt - phi - thk));
   }
 
@@ -355,7 +366,7 @@ export class InductionMotorModel {
     this.state = MotorState.IDLE;
     this.time = 0; this.omega_r = 0; this.theta_r = 0; this.slip = 1;
     this.Te = 0; this.TL = 0; this.Istator = 0; this.brakeTorque = 0;
-    this.stalled = false;
+    this.stalled = false; this.theta_rot_elec = 0;
     this.history.length = 0; this._accum = 0;
   }
 
@@ -375,6 +386,13 @@ export class InductionMotorModel {
 
     if (this.state !== MotorState.IDLE) this.time += h;   // field exists only when energized
     this.slip = slipOf(this.omega_r, this.omega_s);
+
+    // Integrated rotor electrical phase: dθ/dt = s·ωe (rotor-frequency phase).
+    // Accumulated — NOT s·ωe·t, which is only exact at constant slip and
+    // distorts (ωe·t·ds/dt term) through the whole run-up transient.
+    if (this.state !== MotorState.IDLE) {
+      this.theta_rot_elec = (this.theta_rot_elec + this.slip * this.omega_e * h) % (2 * Math.PI);
+    }
 
     // dω/dt = (T_e(ω) − T_L·sgn(ω) − B·ω)/J
     const deriv = (w) => {
