@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="data:," />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+<title>Simulasi Transien Starting Motor Induksi 3 Fasa</title>
+<style>
+  :root{
+    --bg:#f4f6f9; --panel:#ffffffe0; --panel-solid:#ffffff; --line:#d8dfe8;
+    --fg:#1a2330; --dim:#5d6b7c; --accent:#0e7fb8;
+    --A:#c93535; --B:#8f6606; --C:#2b62b8; --ok:#188a4e; --warn:#a35c08;
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "JetBrains Mono", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:var(--sans);overflow:hidden}
+  /* grid-template-rows:100% pins the row to the viewport. Without it the row is
+     auto-sized from the canvas's intrinsic height, which grows every frame that
+     the canvas is resized to match its own parent. */
+  #app{display:grid;grid-template-columns:1fr 380px;grid-template-rows:100%;height:100%}
+  #viewport{position:relative;min-width:0;min-height:0}
+  /* canvas is sized by JS; pin its CSS box so it can never size its own parent */
+  #viewport canvas{display:block;width:100%;height:100%}
+  #hud-top{position:absolute;top:12px;left:12px;display:flex;gap:8px;align-items:center;pointer-events:none}
+  #hud-top .badge{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:6px 10px;font:600 12px var(--mono);letter-spacing:.02em;backdrop-filter:blur(8px);color:var(--fg)}
+  #hud-right{position:absolute;top:12px;right:12px;width:250px;pointer-events:none}
+  #legend{position:absolute;bottom:12px;left:12px;background:var(--panel);border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px;font:12px var(--mono);backdrop-filter:blur(8px);line-height:1.7;color:var(--fg)}
+  #legend .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
+
+  aside{background:var(--panel-solid);border-left:1px solid var(--line);overflow-y:auto;overflow-x:hidden}
+  aside::-webkit-scrollbar{width:9px}
+  aside::-webkit-scrollbar-thumb{background:#c3ccd8;border-radius:5px}
+  .sec{border-bottom:1px solid var(--line);padding:16px 16px}
+  .sec h2{margin:0 0 12px;font:700 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  button{font:600 13px var(--mono);padding:9px 8px;border-radius:7px;border:1px solid var(--line);
+    background:#eef1f6;color:var(--fg);cursor:pointer;transition:background .12s}
+  button:hover{background:#e2e7ef}
+  button:active{transform:translateY(1px)}
+  #btnStart{background:#e3f4e9;border-color:#79c79a;color:#116a3c}
+  #btnStart:hover{background:#d2ecdd}
+  #btnStop{background:#faf3e0;border-color:#c9a648;color:#6b510c}
+  #btnBrake{background:#fbe9ea;border-color:#e08c92;color:#9c2029}
+  #btnReset{background:#eef1f6}
+
+  .row{margin:9px 0}
+  .row + .row{margin-top:6px}          /* tight grouping inside a parameter block */
+  .row label{display:flex;justify-content:space-between;font:12px var(--mono);color:var(--dim);margin-bottom:4px}
+  .row label b{color:var(--fg);font-weight:600}
+  input[type=range]{width:100%;height:16px;-webkit-appearance:none;background:transparent;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;background:#c3ccd8;border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;margin-top:-4.5px;
+    border-radius:50%;background:var(--accent);border:2px solid #ffffff}
+  select{width:100%;background:#eef1f6;color:var(--fg);border:1px solid var(--line);
+    border-radius:6px;padding:6px;font:13px var(--mono)}
+
+  .checks{display:grid;grid-template-columns:1fr 1fr;gap:5px 10px}   /* toggle rapat vertikal, lega horizontal */
+  .checks label{display:flex;gap:6px;align-items:center;font:12px var(--mono);color:var(--dim);cursor:pointer}
+  .checks input{accent-color:var(--accent)}
+
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}   /* kartu telemetri: napas lebih lega dari tombol */
+  .ro{background:#f6f8fb;border:1px solid var(--line);border-radius:7px;padding:7px 9px}
+  .ro .k{font:11px var(--mono);color:var(--dim);letter-spacing:.05em}
+  .ro .v{font:600 15px var(--mono);margin-top:2px}
+  canvas.plot{width:100%;display:block;background:#f6f8fb;border:1px solid var(--line);border-radius:7px}
+  .ro-state{font:700 13px var(--mono)}
+  .ro-state.running{color:var(--ok)} .ro-state.idle{color:var(--dim)}
+  .ro-state.braking{color:var(--warn)} .ro-state.stall{color:#c22a35}
+
+  #seq{list-style:none;margin:0;padding:0;font:12px var(--mono);color:var(--dim)}
+  #seq li{padding:5px 8px;border-left:2px solid #c3ccd8;margin-bottom:3px;line-height:1.35;transition:.2s}
+  #seq li.done{color:#33445a;border-left-color:#7f9cc0}
+  #seq li.active{color:var(--fg);border-left-color:var(--accent);background:#e8f2fa;border-radius:0 5px 5px 0}
+  #seq li .n{display:inline-block;width:14px;color:var(--dim)}
+  .hint{font:12px var(--mono);color:#52606f;line-height:1.5;margin-top:8px}
+  @media (max-width:1000px){#app{grid-template-columns:1fr}aside{position:absolute;right:0;top:0;bottom:0;width:340px}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="viewport">
+    <div id="hud-top">
+      <span class="badge" id="hud-title">THREE-PHASE INDUCTION MOTOR · STARTING TRANSIENT</span>
+    </div>
+    <div id="hud-right"></div>
+    <div id="legend">
+      <div><span class="sw" style="background:#c93535"></span>Fasa A (U) &nbsp;
+           <span class="sw" style="background:#8f6606"></span>Fasa B (V) &nbsp;
+           <span class="sw" style="background:#2b62b8"></span>Fasa C (W)</div>
+      <div><span class="sw" style="background:#0e7fb8"></span>Garis medan RMF (ωs)</div>
+      <div><span class="sw" style="background:#cc8f1f"></span>Arus induksi rotor i<sub>r,k</sub></div>
+      <div><span class="sw" style="background:#d95a1f"></span>Gaya Lorentz F<sub>k</sub></div>
+    </div>
+  </div>
+
+  <aside>
+    <div class="sec">
+      <h2>Operasi</h2>
+      <div class="btns">
+        <button id="btnStart">▶ Start Motor</button>
+        <button id="btnStop">■ Stop</button>
+        <button id="btnBrake">⏹ Emergency Brake</button>
+        <button id="btnReset">⟲ Reset</button>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <label>Kecepatan Animasi <b id="out-animSpeed">1.00×</b></label>
+        <input type="range" id="animSpeed" min="0.05" max="2" step="0.05" value="1" />
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2>Parameter Mesin &amp; Suplai</h2>
+      <div class="row">
+        <label>Tegangan Fasa V<sub>ph</sub> <b id="out-vph">230.9 V</b></label>
+        <input type="range" id="vph" min="0" max="400" step="1" value="230.9" />
+      </div>
+      <div class="row">
+        <label>Frekuensi f <b id="out-freq">50 Hz</b></label>
+        <input type="range" id="freq" min="10" max="60" step="1" value="50" />
+      </div>
+      <div class="row">
+        <label>Jumlah Kutub P <b id="out-poles">4 kutub</b></label>
+        <input type="range" id="poles" min="2" max="8" step="2" value="4" />
+      </div>
+      <div class="row">
+        <label>Momen Inersia J <b id="out-J">0.25 kg·m²</b></label>
+        <input type="range" id="J" min="0.01" max="2" step="0.01" value="0.25" />
+      </div>
+      <div class="row">
+        <label>Torsi Beban T<sub>L</sub> <b id="out-TL">0.0 N·m</b></label>
+        <input type="range" id="TL" min="0" max="100" step="0.5" value="0" />
+      </div>
+      <div class="row">
+        <label>Tahanan Rotor R<sub>r</sub> <b id="out-Rr">0.33 Ω</b></label>
+        <input type="range" id="Rr" min="0.05" max="2" step="0.01" value="0.332" />
+      </div>
+      <div class="hint">B ∝ V/f — menurunkan f pada V tetap menaikkan fluks (jenuh). R<sub>r</sub> besar → torsi start naik, slip nominal naik.</div>
+    </div>
+
+    <div class="sec">
+      <h2>Visibilitas &amp; Potongan</h2>
+      <div class="checks">
+        <label><input type="checkbox" id="chkCasing" checked> Casing luar</label>
+        <label><input type="checkbox" id="chkFins" checked> Sirip pendingin</label>
+        <label><input type="checkbox" id="chkStator" checked> Stator + belitan</label>
+        <label><input type="checkbox" id="chkRMF" checked> Garis fluks RMF</label>
+        <label><input type="checkbox" id="chkBarI" checked> Arus rotor</label>
+        <label><input type="checkbox" id="chkForce" checked> Gaya Lorentz</label>
+        <label><input type="checkbox" id="chkRing" checked> Cincin ωs</label>
+        <label><input type="checkbox" id="chkWire" checked> Kabel suplai</label>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <label>Cutaway View</label>
+        <select id="cutaway">
+          <option value="none">Full assembly</option>
+          <option value="120">Irisan 120°</option>
+          <option value="90" selected>Irisan 90°</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Exploded View <b id="out-explode">0.00</b></label>
+        <input type="range" id="explode" min="0" max="1" step="0.02" value="0" />
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2>Telemetri Waktu-Nyata</h2>
+      <div class="grid">
+        <div class="ro"><div class="k">STATUS</div><div class="v"><span id="ro-state" class="ro-state idle">IDLE</span></div></div>
+        <div class="ro"><div class="k">WAKTU t</div><div class="v" id="ro-t">0.00</div></div>
+        <div class="ro"><div class="k">ωr (rpm)</div><div class="v" id="ro-rpm">0</div></div>
+        <div class="ro"><div class="k">ωs (rpm)</div><div class="v" id="ro-sync">1500</div></div>
+        <div class="ro"><div class="k">SLIP s</div><div class="v" id="ro-slip">100.00 %</div></div>
+        <div class="ro"><div class="k">f rotor</div><div class="v" id="ro-fr">50.00 Hz</div></div>
+        <div class="ro"><div class="k">I stator</div><div class="v" id="ro-current">0.0</div></div>
+        <div class="ro"><div class="k">I / I_n</div><div class="v" id="ro-iratio">0.00× In</div></div>
+        <div class="ro"><div class="k">Torsi Te (N·m)</div><div class="v" id="ro-torque">0.0</div></div>
+        <div class="ro"><div class="k">Tmax (N·m)</div><div class="v" id="ro-tmax">0</div></div>
+        <div class="ro"><div class="k">Fluks B (pu)</div><div class="v" id="ro-flux">0.90</div></div>
+        <div class="ro"><div class="k">Torsi Beban</div><div class="v" id="ro-tl">0.0</div></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <label>ωr vs ωs &amp; I(t), Te(t)</label>
+        <canvas id="plotSpeed" class="plot" height="110"></canvas>
+        <canvas id="plotCurrent" class="plot" height="110" style="margin-top:6px"></canvas>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2>Urutan Fisis Starting</h2>
+      <ol id="seq">
+        <li id="seq1"><span class="n">1</span>Arus 3 fasa mengalir ke belitan stator</li>
+        <li id="seq2"><span class="n">2</span>RMF terbentuk &amp; berputar pada ωs</li>
+        <li id="seq3"><span class="n">3</span>Rotor diam (s=1): fluks memotong konduktor maksimum</li>
+        <li id="seq4"><span class="n">4</span>GGL induksi besar → arus rotor starting tinggi</li>
+        <li id="seq5"><span class="n">5</span>Gaya Lorentz maksimal → torsi percepatan</li>
+        <li id="seq6"><span class="n">6</span>Rotor akselerasi (RK4) menuju kecepatan nominal</li>
+      </ol>
+      <div class="hint">Putar kamera: drag. Zoom: scroll. Pan: drag kanan.</div>
+    </div>
+  </aside>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
