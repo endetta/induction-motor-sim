@@ -161,6 +161,8 @@
         <label><input type="checkbox" id="chkBarI" checked> Arus rotor</label>
         <label><input type="checkbox" id="chkForce" checked> Gaya Lorentz</label>
         <label><input type="checkbox" id="chkWire" checked> Kabel suplai</label>
+        <label><input type="checkbox" id="chkShields" checked> Tutup Ujung (End-Shields)</label>
+        <label><input type="checkbox" id="chkFrontShield" checked> Tutup Depan (Front Shield)</label>
       </div>
       <div class="row" style="margin-top:14px">
         <label>Cutaway View</label>
@@ -181,10 +183,23 @@
           <option value="delta">Segitiga (&Delta;)</option>
         </select>
       </div>
+      <div class="row" style="margin-top:6px;">
+        <label>X-Ray Casing <b id="out-ghost">100%</b></label>
+        <input type="range" id="sldGhost" min="0.1" max="1.0" step="0.05" value="1.0" />
+      </div>
       <div class="row">
         <button id="btnFocusTermBox" style="width:100%">🎯 Fokus ke Terminal Box</button>
       </div>
-      <label class="checks"><input type="checkbox" id="chkLid"> Buka tutup terminal box</label>
+      <label class="checks" style="margin-top:2px"><input type="checkbox" id="chkLidOpen"> Buka Tutup Terminal Box</label>
+    </div>
+
+    <div class="sec">
+      <h2>Sudut Pandang Kamera</h2>
+      <div class="btns" style="display:grid;grid-template-columns:1fr;gap:4px;">
+        <button id="btnCamAxial">🔍 Penampang Celah Udara (Front Axial)</button>
+        <button id="btnCamCutaway">📐 Irisan Samping (Cutaway Lateral)</button>
+        <button id="btnCamTerm">⚡ Fokus Papan Terminal (Jumper Star/Δ)</button>
+      </div>
     </div>
 
     <div class="sec">

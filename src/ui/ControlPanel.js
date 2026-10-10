@@ -125,8 +125,19 @@ export class ControlPanel {
     chk('chkBarI',   (v) => this.hooks.onVisibility('barCurrent', v));
     chk('chkForce',  (v) => this.hooks.onVisibility('force', v));
     chk('chkWire',   (v) => this.hooks.onVisibility('wire', v));
-    chk('chkLid',    (v) => this.hooks.onLidOpen(v));
+    chk('chkLidOpen',     (v) => this.hooks.onTerminalLid(v));
+    chk('chkFrontShield', (v) => this.hooks.onFrontShield(v));
+    chk('chkShields',     (v) => this.hooks.onShields(v));
+    $('sldGhost').addEventListener('input', (e) => {
+      const v = parseFloat(e.target.value);
+      $('out-ghost').textContent = Math.round(v * 100) + '%';
+      this.hooks.onGhostOpacity(v);
+    });
     $('btnFocusTermBox').addEventListener('click', () => this.hooks.onFocusTermBox());
+    const cam = (id, name) => $(id).addEventListener('click', () => this.hooks.onCameraPreset(name));
+    cam('btnCamAxial', 'axial');
+    cam('btnCamCutaway', 'cutaway');
+    cam('btnCamTerm', 'terminal');
   }
 
   _buildPlots() {

@@ -46,6 +46,26 @@ const rim = new THREE.DirectionalLight(0x9cc8ff, 0.7);
 rim.position.set(-0.9, 0.4, -0.8);
 scene.add(rim);
 
+// Inner-cavity fill: the key/rim lights both come from outside, so the stator
+// bore, the air gap and the rotor cage sat in near-black. A short-range,
+// shadow-free point light out in front of the bore mouth lights the cavity
+// without lighting anything else.
+// NOTE on the numbers: three r155+ uses physically-correct light units
+// (renderer.useLegacyLights === false), so a point light's contribution is
+// intensity / d^decay — not the legacy (1 − d/cutoff)^decay window. The old
+// "1.8" that suited legacy lighting is ~240× too hot here (it would clip the
+// bore to white). decay=1 with a small intensity keeps the falloff steep
+// enough to stay inside the machine while still reading as a clear fill.
+const innerBoreLight = new THREE.PointLight(0xffffff, 0.05, 0.45, 1);
+innerBoreLight.position.set(0, 0, 0.08);   // at the front air-gap mouth
+innerBoreLight.castShadow = false;
+scene.add(innerBoreLight);
+// twin on the non-drive end so the rear bore is not a black hole in cutaway
+const innerBoreLightRear = new THREE.PointLight(0xffffff, 0.035, 0.45, 1);
+innerBoreLightRear.position.set(0, 0, -0.08);
+innerBoreLightRear.castShadow = false;
+scene.add(innerBoreLightRear);
+
 // ground plane for shadow grounding
 const ground = new THREE.Mesh(
   new THREE.CircleGeometry(2.2, 48).rotateX(-Math.PI / 2),
@@ -72,6 +92,31 @@ scene.add(motor3d.root);
 
 const viz = new VectorFieldVisualizer(scene, motor3d);
 
+// ---- camera preset transitions ----------------------------------------------
+// Preset views hand the camera a destination; the render loop lerps toward it.
+// OrbitControls is NOT disabled — damping keeps it in sync because the lerp
+// writes camera.position/controls.target directly before controls.update().
+let targetCamPos = null;
+let targetControlsLookAt = null;
+const CAM_LERP = 0.08;
+const CAM_EPS = 0.002;
+
+export function transitionCamera(pos, lookAt) {
+  targetCamPos = pos.clone();
+  targetControlsLookAt = lookAt.clone();
+}
+
+const CAM_PRESETS = {
+  axial:   { pos: [0, 0, 0.42],              lookAt: [0, 0, 0.08] },
+  cutaway: { pos: [0.32, 0.18, 0.12],        lookAt: [0, 0, 0] },
+  terminal:{ pos: [0, 0.24, 0.08],           lookAt: [0, 0.14, 0.055] },
+};
+export function cameraPreset(name) {
+  const p = CAM_PRESETS[name];
+  if (!p) return;
+  transitionCamera(new THREE.Vector3(...p.pos), new THREE.Vector3(...p.lookAt));
+}
+
 // ---- physics + UI -----------------------------------------------------------
 const model = new InductionMotorModel();
 
@@ -79,12 +124,19 @@ const hooks = {
   onCutaway: (mode) => motor3d.setCutaway(mode),
   onExplode: (f) => motor3d.setExplode(f),
   onJumper: (mode) => motor3d.setJumper(mode),
-  onLidOpen: (open) => motor3d.setLidOpen(open),
+  onLidOpen: (open) => motor3d.setTerminalLid(open),
+  onTerminalLid: (open) => motor3d.setTerminalLid(open),
+  onFrontShield: (v) => motor3d.setFrontShieldVisible(v),
+  onShields: (v) => motor3d.setShieldsVisible(v),
+  onGhostOpacity: (v) => motor3d.setGhostOpacity(v),
+  onCameraPreset: (name) => cameraPreset(name),
   onFocusTermBox: () => {
-    // Fokus ke Terminal Box: aim the orbit target at the box and move close
+    // Fokus ke Terminal Box: gliding preset instead of a hard camera teleport
     const t = motor3d.focusTermBox;
-    controls.target.set(t.x, t.y, t.z);
-    camera.position.set(0.22, t.y + 0.10, t.z + 0.28);
+    transitionCamera(
+      new THREE.Vector3(0.22, t.y + 0.10, t.z + 0.28),
+      new THREE.Vector3(t.x, t.y, t.z),
+    );
   },
   onVisibility: (name, on) => {
     switch (name) {
@@ -162,6 +214,21 @@ function frame() {
     sampleAccum = 0;
   }
   panel.update(tel);
+
+  // camera preset transition: exponential ease toward the armed target. The
+  // epsilon snap clears the target so OrbitControls regains full authority
+  // (a lingering target would fight every manual drag, one lerp step per frame).
+  if (targetCamPos && targetControlsLookAt) {
+    camera.position.lerp(targetCamPos, CAM_LERP);
+    controls.target.lerp(targetControlsLookAt, CAM_LERP);
+    if (camera.position.distanceTo(targetCamPos) < CAM_EPS
+        && controls.target.distanceTo(targetControlsLookAt) < CAM_EPS) {
+      camera.position.copy(targetCamPos);
+      controls.target.copy(targetControlsLookAt);
+      targetCamPos = null;
+      targetControlsLookAt = null;
+    }
+  }
 
   controls.update();
   renderer.render(scene, camera);

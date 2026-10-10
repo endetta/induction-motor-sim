@@ -84,8 +84,10 @@ function makeMaterials() {
     foot:    std(0x6b7480, 0.30, 0.55),
     shield:  std(0xa7b0ba, 0.30, 0.40),
     termBox: std(0x7d8794, 0.20, 0.50),    pin: std(0xd4af37, 1.0, 0.3),
-    core:    std(0x8c96a4, 0.70, 0.50, { map: laminationTexture(60) }),   // laminated stator
-    rotorCore: std(0x79828d, 0.70, 0.55, { map: laminationTexture(45) }),
+    // stator vs rotor laminations are given clearly different albedo/metalness
+    // so the 7 mm air gap (rotor R 0.055 / bore R 0.062) reads as a hard edge
+    core:    std(0x8c96a4, 0.75, 0.40, { map: laminationTexture(60) }),   // laminated stator
+    rotorCore: std(0x525961, 0.50, 0.60, { map: laminationTexture(45) }),
     bar:     std(0xcf8440, 0.90, 0.30),                      // copper cage bar
     ring:    std(0xe09a52, 0.90, 0.28),                      // copper end ring
     shaft:   std(0xc9d1da, 0.90, 0.20),
@@ -240,11 +242,115 @@ export function buildMotor(rotorType = 'cage') {
   // Overhang z-level = coil index mod 3 — same-level coils start 90° apart,
   // clearing the 75° arc span; different levels are 8.5 mm apart axially.
   const phaseMats = { A: mats.windingA, B: mats.windingB, C: mats.windingC };
+  const coils = { A: [], B: [], C: [] };   // per-phase, in slot order (drives the circuit below)
   for (let ci = 0; ci < N_SLOTS / 2; ci++) {
     const k = 2 * ci + 1;                          // odd slot: 1, 3, … 23
     const ph = PHASE_OF[BELT_SEQ[Math.floor(k / 2) % 6]];
     stator.add(new THREE.Mesh(coilGeometry(k, ci % 3), phaseMats[ph]));
+    // level = ci % 3 lands every coil of one phase on the SAME z-level
+    // (A→0, C→1, B→2), so the three phases' end-windings are already stacked
+    // axially — the jumpers below inherit that separation for free.
+    coils[ph].push({ k, level: ci % 3 });
   }
+
+  // ---- winding circuit: leads, inter-pole jumpers, star point ---------------
+  // The 12 coils above are closed loops in their slots — electrically an open
+  // circuit. What makes it a machine is the copper that joins them: six leads
+  // in from the terminal box, per-phase arcs from one pole group to the next,
+  // and a neutral ring at the non-drive end for the Y connection. All of it
+  // lives in `stator`, so it explodes and hides with the winding.
+  const circuit = new THREE.Group();
+  const P3 = (r, th, z) => new THREE.Vector3(r * Math.cos(th), r * Math.sin(th), z);
+  const slotTh = (kk) => (2 * Math.PI * ((kk % N_SLOTS) + N_SLOTS)) / N_SLOTS;
+  const frontZ = (level) => CORE_LEN / 2 + 0.005 + level * 0.0085;   // = coilGeometry's zL
+  const wire = (pts, r, mat, seg = 32) => new THREE.Mesh(
+    new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3(pts, false, 'centripetal'), seg, r, 6, false), mat);
+
+  const PIN_Y = CASING_R + 0.064;                    // top stud row (matches pinGeos)
+  const pinOf = (c, row) => new THREE.Vector3(-0.018 + c * 0.018, PIN_Y, 0.038 + row * 0.034);
+  const RING_R = 0.068;
+  const RING_Z = -(CORE_LEN / 2 + 0.0265);           // 26.5 mm past the rear core face
+
+  for (const [c, ph] of [[0, 'A'], [1, 'B'], [2, 'C']]) {
+    const mat = phaseMats[ph];
+    const list = coils[ph];
+    const head = list[0];
+    const az = Math.atan2(pinOf(c, 0).y, pinOf(c, 0).x);   // ≈ 90° ± 6°
+
+    // --- U1 / V1 / W1 — pin, down through the yoke, onto the phase head ----
+    // Drops out of the box floor at the pin's own azimuth, disappears into the
+    // yoke (which is exactly what "through the yoke entry hole" looks like from
+    // outside) and re-emerges in the front end-winding.
+    const zh = frontZ(head.level);
+    const land = Math.min(Math.max(az, slotTh(head.k) + 0.18), slotTh(head.k + 5) - 0.18);
+    circuit.add(wire([
+      pinOf(c, 0),
+      new THREE.Vector3(pinOf(c, 0).x, PIN_Y - 0.029, 0.076),
+      P3(0.126, az, 0.110),
+      P3(0.110, az, 0.112),
+      P3(0.088, az, zh + 0.011),
+      P3(0.076, land, zh),
+    ], 0.0026, mat, 40));
+
+    // --- U2 / V2 / W2 — pin, back over the fins, down to the neutral ring --
+    // The tails leave the box at the rear and run the length of the housing on
+    // top of the cooling fins, then drop past the rear edge to the star point.
+    const R_TOP = 0.1325 + c * 0.0025;               // clears the fin tips (0.129)
+    circuit.add(wire([
+      pinOf(c, 1),
+      new THREE.Vector3(pinOf(c, 1).x, PIN_Y - 0.010, 0.030),
+      P3(R_TOP, az, -0.010),
+      P3(R_TOP, az, -0.118),
+      P3(0.100, az, RING_Z),
+      P3(RING_R, az, RING_Z),
+    ], 0.0024, mat, 46));
+
+    // --- inter-pole group jumpers: 4 poles → 3 links per phase -------------
+    // Exit of group i to the entry of group i+1, arcing over the front
+    // end-winding. In a series 4-pole winding the current sense alternates
+    // group to group, but that is a property of the field, not of the copper:
+    // the physical path is one continuous run, so one arc serves every link.
+    const rJump = 0.083 + c * 0.004;                 // per-phase radius → no overlap
+    for (let i = 0; i < list.length - 1; i++) {
+      const zA = frontZ(list[i].level), zB = frontZ(list[i + 1].level);
+      const thA = slotTh(list[i].k + 5), thB = slotTh(list[i + 1].k);
+      const mid = (thA + thB) / 2;
+      circuit.add(wire([
+        P3(0.076, thA - 0.04, zA),
+        P3(rJump, mid - 0.03, zA + 0.006),
+        P3(rJump, mid, zA + 0.008),
+        P3(rJump, mid + 0.03, zA + 0.006),
+        P3(0.076, thB + 0.04, zB),
+      ], 0.0032, mat, 26));
+    }
+  }
+  stator.add(circuit);
+
+  // --- star point: neutral ring at the non-drive end ------------------------
+  // Ties the three U2/V2/W2 tails into one physical node. Shown for Bintang
+  // (Y); hidden for Δ, where the jumper bars at the terminal box are what
+  // expresses the connection instead.
+  const neutral = new THREE.Group();
+  const neutralMat = new THREE.MeshStandardMaterial({
+    color: 0xb08a52, metalness: 0.9, roughness: 0.30,
+    emissive: 0xb08a52, emissiveIntensity: 0.08,
+  });
+  clipMats.push(neutralMat);
+  const ringGeo = new THREE.TorusGeometry(RING_R, 0.0030, 6, 64);
+  ringGeo.translate(0, 0, RING_Z);
+  neutral.add(new THREE.Mesh(ringGeo, neutralMat));
+  // the three tails actually coming out of the winding tie onto the ring
+  for (const ph of ['A', 'B', 'C']) {
+    const t = coils[ph][coils[ph].length - 1];
+    const th = slotTh(t.k + 5);
+    neutral.add(wire([
+      P3(0.076, th + 0.10, -frontZ(t.level)),
+      P3(0.074, th, RING_Z + 0.008),
+      P3(RING_R, th, RING_Z),
+    ], 0.0024, phaseMats[ph], 18));
+  }
+  stator.add(neutral);
   root.add(stator);
 
   // ---- rotor assembly (spins about Z) --------------------------------------
@@ -348,24 +454,42 @@ export function buildMotor(rotorType = 'cage') {
     boss.rotateX(Math.PI / 2);
     boss.translate(0, 0, side * (CASING_LEN / 2 + 0.012));
     grp.add(new THREE.Mesh(boss, mats.shield));
-    root.add(grp);
   }
+  // End shields belong to the outer housing, not to root. On root they survived
+  // the "Casing luar" toggle (which only hides `housing`) and stayed behind as
+  // two discs floating in mid-air with everything else gone.
+  housing.add(shieldFront, shieldRear);
   root.add(housing);
 
   // terminal box with 6 pins (U1 V1 W1 / U2 V2 W2), top of casing.
   // Supply cables are CHILDREN of termBox: they ride along when the box lifts
   // in exploded view, and their far ends land on the U1/V1/W1 bolts.
   const termBox = new THREE.Group();
-  const box = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.05, 0.062), mats.termBox);
-  box.position.set(0, CASING_R + 0.028, 0.055);
+  // The shell must actually ENCLOSE the six studs and the Star/Delta jumper
+  // plate. At the old 50 mm height the studs (top 0.186) and the brass plate
+  // (top 0.193) punched through a lid sitting at 0.171, so the jumper read as
+  // floating hardware hovering above the box instead of terminated inside it.
+  const BOX_Y0 = CASING_R + 0.003;                 // 0.118 — box bottom
+  const BOX_H = 0.085;                             // → box top 0.203
+  // Shell is a separate see-through material from the lid: the shell stays
+  // faintly visible always (so the box still reads as a box), while the lid is
+  // the part that lifts. Both are depthWrite:false so the brass plate and the
+  // studs inside are never depth-occluded by the enclosure.
+  const shellMat = new THREE.MeshStandardMaterial({
+    color: 0x7d8794, metalness: 0.2, roughness: 0.5,
+    transparent: true, opacity: 0.22, depthWrite: false,
+  });
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.075, BOX_H, 0.062), shellMat);
+  box.position.set(0, BOX_Y0 + BOX_H / 2, 0.055);
   termBox.add(box);
+  clipMats.push(shellMat);          // keep the box inside the cutaway wedge
   // semi-transparent lid — the Star/Delta jumper plate stays visible inside
   const lidMat = new THREE.MeshStandardMaterial({
     color: 0x7d8794, metalness: 0.2, roughness: 0.5,
-    transparent: true, opacity: 0.35, depthWrite: false,
+    transparent: true, opacity: 0.30, depthWrite: false,
   });
   const lid = new THREE.Mesh(new THREE.BoxGeometry(0.083, 0.008, 0.068), lidMat);
-  lid.position.set(0, CASING_R + 0.056, 0.055);
+  lid.position.set(0, BOX_Y0 + BOX_H + 0.004, 0.055);
   termBox.add(lid);
   // cable glands on the box side wall (three rubber grommets the leads pass through)
   const glandGeos = [];
@@ -386,24 +510,26 @@ export function buildMotor(rotorType = 'cage') {
   housing.add(termBox);
 
   // ---- supply cables (three colored leads into the terminal box) -----------
-  // Built INSIDE the geometry module so they parent to termBox (Tugas 3.1):
+  // Built INSIDE the geometry module so they parent to termBox:
   // exploded view carries them with the box; ends land on U1/V1/W1 bolts.
   const cables = new THREE.Group();
   for (const [i, color] of [[0, 0xd94848], [1, 0xb8860b], [2, 0x2b62b8]]) {
     const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.1 });
-    // two segments: free lead (world-ish, but grouped) + gland→bolt stub
+    const x = -0.018 + i * 0.018;                  // U1 / V1 / W1 column
+    // lead: STARTS at the gland on the box wall and curves out, so the cable
+    // grows out of the box rather than dangling toward it from nowhere.
     const lead = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
-      new THREE.Vector3(-0.02 + i * 0.02, 0.30, 0.16),
-      new THREE.Vector3(-0.10 + i * 0.06, 0.24, 0.20),
-      new THREE.Vector3(-0.02 + i * 0.02, 0.16, 0.10),
-      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.026, 0.098),
+      new THREE.Vector3(x, CASING_R + 0.026, 0.098),
+      new THREE.Vector3(x - 0.055 + i * 0.03, CASING_R + 0.075, 0.135),
+      new THREE.Vector3(x - 0.10 + i * 0.06, 0.24, 0.20),
+      new THREE.Vector3(x - 0.02 + i * 0.02, 0.30, 0.16),
     ]), 24, 0.004, 6), mat);
     cables.add(lead);
     // short stub inside the box: gland → pin (U1/V1/W1 top row)
     const stub = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
-      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.026, 0.086),
-      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.046, 0.062),
-      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.060, 0.038),
+      new THREE.Vector3(x, CASING_R + 0.026, 0.086),
+      new THREE.Vector3(x, CASING_R + 0.046, 0.062),
+      new THREE.Vector3(x, CASING_R + 0.064, 0.038),
     ]), 12, 0.0032, 6), mat);
     cables.add(stub);
   }
@@ -517,21 +643,51 @@ export function buildMotor(rotorType = 'cage') {
   }
   setExplode(0);
 
-  // terminal-box lid visibility toggle ("Buka Tutup Terminal Box")
-  function setLidOpen(open) { lid.visible = !open; }
+  // ---- visibility / opacity control ------------------------------------------
+  /** Terminal-box lid: true = lifted off (hidden), so the brass jumper plate and
+   *  the six U1/V1/W1 – U2/V2/W2 studs are unobstructed. */
+  function setTerminalLid(open) {
+    lid.visible = !open;
+    shellMat.opacity = open ? 0.06 : 0.22;   // near-invisible shell when opened
+  }
+  /** Front end shield: false removes the disc + bearing boss so the air gap,
+   *  the rotor end ring and the stator slot section are visible head-on. */
+  function setFrontShieldVisible(visible) {
+    shieldFront.visible = visible;
+  }
+  /** Both end shields together — casing on, covers off. */
+  function setShieldsVisible(visible) {
+    shieldFront.visible = visible;
+    shieldRear.visible = visible;
+  }
+  /** X-ray / ghosting: fades the casing, fins and stator core while keeping the
+   *  outer silhouette (the object stays depth-sorted, it just stops occluding).
+   *  opacity ≥ 0.98 restores fully solid rendering. */
+  function setGhostOpacity(opacity) {
+    const ghost = opacity < 0.98;
+    [mats.casing, mats.fin, mats.core].forEach((m) => {
+      m.transparent = ghost;
+      m.opacity = opacity;
+      m.depthWrite = !ghost;
+      m.needsUpdate = true;
+    });
+  }
 
   return {
     root, rotor, stator, housing, shieldFront, shieldRear, rotorExtras,
     termBox, cables, lid,
     phaseMats, mats,
-    setCutaway, setExplode, setLidOpen,
-    focusTermBox: { x: 0, y: CASING_R + 0.03, z: 0.055 },   // camera-aim target
+    setCutaway, setExplode,
+    setLidOpen: setTerminalLid,          // legacy name kept for the chkLid toggle
+    setFrontShieldVisible, setShieldsVisible, setTerminalLid, setGhostOpacity,
+    focusTermBox: { x: 0, y: CASING_R + 0.055, z: 0.055 },   // camera-aim target
     setJumper: (mode) => {
       termBox.remove(jumper);
       jumper.geometry.dispose();
       const next = jumperPlates(mode);
       jumper.geometry = next.geometry;
       termBox.add(jumper);
+      neutral.visible = mode !== 'delta';   // Y → physical star point on show
     },
     dims: { CORE_LEN, BAR_CIRCLE_R, BORE_R },
   };
