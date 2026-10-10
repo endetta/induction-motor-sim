@@ -9,7 +9,8 @@
  *   buttons:  btnStart, btnStop, btnBrake, btnReset, btnStepMode, btnStepNext,
  *             cutaway select, jumper select
  *   toggles:  chkCasing, chkFins, chkRMF, chkBarI, chkForce, chkStator,
- *             chkPhaseField, chkResultant, chkLid, chkSlowMo (0.1× edukasi slow-mo)
+ *             chkPhaseField, chkResultant, chkWire, chkLid,
+ *             chkSlowMo (0.1× edukasi slow-mo)
  *   readouts: ro-*, canvas plots: plotSpeed, plotCurrent
  */
 
@@ -123,6 +124,7 @@ export class ControlPanel {
     chk('chkResultant', (v) => this.hooks.onVisibility('netField', v));
     chk('chkBarI',   (v) => this.hooks.onVisibility('barCurrent', v));
     chk('chkForce',  (v) => this.hooks.onVisibility('force', v));
+    chk('chkWire',   (v) => this.hooks.onVisibility('wire', v));
     chk('chkLid',    (v) => this.hooks.onLidOpen(v));
     $('btnFocusTermBox').addEventListener('click', () => this.hooks.onFocusTermBox());
   }
