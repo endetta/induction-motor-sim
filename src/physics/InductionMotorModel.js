@@ -78,7 +78,8 @@ export const DEFAULT_PARAMS = {
   nBars: 24,       // rotor bars modelled for the Lorentz-force layer
   L: 0.20,         // m       active rotor-bar length
   rRotor: 0.05,    // m       rotor radius at the bar mid-plane
-  J: 0.25,         // kg·m²   total inertia (rotor + coupled load)
+  J: 1.2,          // kg·m²   total inertia (rotor + coupled load) — sized so the
+                   //         educational run-up transient lasts ~2–4 s visual
   TL: 0.0,         // N·m     constant-magnitude load torque
   // No-load drag: friction + windage + core loss, lumped as viscous.
   // Sized from a no-load test losing ≈4 % of rated power at synchronous speed.

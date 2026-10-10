@@ -72,23 +72,6 @@ scene.add(motor3d.root);
 
 const viz = new VectorFieldVisualizer(scene, motor3d);
 
-// ---- supply cables (three colored leads into the terminal box) --------------
-const cables = new THREE.Group();
-for (const [i, color] of [[0, 0xd94848], [1, 0xb8860b], [2, 0x2b62b8]]) {
-  const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(-0.02 + i * 0.02, 0.30, 0.16),
-    new THREE.Vector3(-0.10 + i * 0.06, 0.24, 0.20),
-    new THREE.Vector3(-0.02 + i * 0.02, 0.16, 0.10),
-    new THREE.Vector3(0.008 + i * 0.018, motor3d.mats ? 0.17 : 0.17, 0.056),
-  ]);
-  const tube = new THREE.Mesh(
-    new THREE.TubeGeometry(curve, 24, 0.004, 6),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.1 }),
-  );
-  cables.add(tube);
-}
-scene.add(cables);
-
 // ---- physics + UI -----------------------------------------------------------
 const model = new InductionMotorModel();
 
@@ -96,6 +79,13 @@ const hooks = {
   onCutaway: (mode) => motor3d.setCutaway(mode),
   onExplode: (f) => motor3d.setExplode(f),
   onJumper: (mode) => motor3d.setJumper(mode),
+  onLidOpen: (open) => motor3d.setLidOpen(open),
+  onFocusTermBox: () => {
+    // Fokus ke Terminal Box: aim the orbit target at the box and move close
+    const t = motor3d.focusTermBox;
+    controls.target.set(t.x, t.y, t.z);
+    camera.position.set(0.22, t.y + 0.10, t.z + 0.28);
+  },
   onVisibility: (name, on) => {
     switch (name) {
       case 'casing':  motor3d.housing.visible = on; break;
@@ -104,8 +94,9 @@ const hooks = {
       case 'rmf':     viz.toggle('rmf', on); break;
       case 'barCurrent': viz.toggle('barCurrent', on); break;
       case 'force':   viz.toggle('force', on); break;
-      case 'speedRing': viz.toggle('speedRing', on); break;
-      case 'wire':    cables.visible = on; break;
+      case 'phaseField': viz.toggle('phaseField', on); break;
+      case 'netField': viz.netArrow.visible = on; break;
+      case 'wire':    motor3d.cables.visible = on; break;
     }
   },
 };
@@ -144,19 +135,24 @@ function frame() {
   requestAnimationFrame(frame);
   const dtWall = Math.min(clock.getDelta(), CLOCK_MAX);
 
-  // physics: wall time × animation speed → simulated time
-  if (model.state !== 'idle' || model.omega_r > 0) model.step(dtWall * panel.animSpeed);
-  else model.step(dtWall * panel.animSpeed);     // keep electrical clock running too
+  // physics: wall time × animation speed → simulated time.
+  // Slow-Mo edukasi: 0.1× time scale so the J=1.2 kg·m² run-up spans 3–5 s visual.
+  // Step mode: physics held until the "Next" gate releases it.
+  const scale = panel.slowMo ? 0.1 : panel.animSpeed;
+  if (panel.physicsGate()) {
+    if (model.state !== 'idle' || model.omega_r > 0) model.step(dtWall * scale);
+    else model.step(dtWall * scale);     // keep electrical clock running too
+  }
 
   // rotor orientation (mechanical angle from the model)
   motor3d.rotor.rotation.z = -model.theta_r;     // −Z: RH rotation matches +θ math
   // wound-rotor slip rings spin with the rotor automatically (children of rotor)
 
-  // vector layers + emissive windings
-  viz.update(model, panel.animSpeed, dtWall);
+  // vector layers + emissive windings (slow-mo also scales the field animation)
+  viz.update(model, panel.slowMo ? 0.1 : panel.animSpeed, dtWall);
 
-  // RMF loops sit centred in the air gap plane, facing camera-neutral XY
-  viz.rmf.position.z = 0.0;
+  // RMF loops live in the front cross-section plane (z set inside the viz)
+  // — no per-frame repositioning needed anymore.
 
   // telemetry: 30 Hz sampling into plots, HUD text every frame
   sampleAccum += dtWall;

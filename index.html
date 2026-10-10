@@ -43,6 +43,7 @@
     background:#eef1f6;color:var(--fg);cursor:pointer;transition:background .12s}
   button:hover{background:#e2e7ef}
   button:active{transform:translateY(1px)}
+  button.active-step{background:#e3f0f9;border-color:#79aec9;color:#0e5a86}
   #btnStart{background:#e3f4e9;border-color:#79c79a;color:#116a3c}
   #btnStart:hover{background:#d2ecdd}
   #btnStop{background:#faf3e0;border-color:#c9a648;color:#6b510c}
@@ -112,6 +113,11 @@
         <label>Kecepatan Animasi <b id="out-animSpeed">1.00×</b></label>
         <input type="range" id="animSpeed" min="0.05" max="2" step="0.05" value="1" />
       </div>
+      <label class="checks" style="margin-top:8px"><input type="checkbox" id="chkSlowMo"> Mode Edukasi Slow-Mo (0.1× skala waktu)</label>
+      <div class="btns" style="margin-top:8px">
+        <button id="btnStepMode">⏸ Jeda per Langkah</button>
+        <button id="btnStepNext">▶ Next Fenomena</button>
+      </div>
     </div>
 
     <div class="sec">
@@ -129,8 +135,8 @@
         <input type="range" id="poles" min="2" max="8" step="2" value="4" />
       </div>
       <div class="row">
-        <label>Momen Inersia J <b id="out-J">0.25 kg·m²</b></label>
-        <input type="range" id="J" min="0.01" max="2" step="0.01" value="0.25" />
+        <label>Momen Inersia J <b id="out-J">1.20 kg·m²</b></label>
+        <input type="range" id="J" min="0.01" max="2" step="0.01" value="1.2" />
       </div>
       <div class="row">
         <label>Torsi Beban T<sub>L</sub> <b id="out-TL">0.0 N·m</b></label>
@@ -150,9 +156,10 @@
         <label><input type="checkbox" id="chkFins" checked> Sirip pendingin</label>
         <label><input type="checkbox" id="chkStator" checked> Stator + belitan</label>
         <label><input type="checkbox" id="chkRMF" checked> Garis fluks RMF</label>
+        <label><input type="checkbox" id="chkPhaseField" checked> Medan Fasa A/B/C</label>
+        <label><input type="checkbox" id="chkResultant" checked> Resultan RMF</label>
         <label><input type="checkbox" id="chkBarI" checked> Arus rotor</label>
         <label><input type="checkbox" id="chkForce" checked> Gaya Lorentz</label>
-        <label><input type="checkbox" id="chkRing" checked> Cincin ωs</label>
         <label><input type="checkbox" id="chkWire" checked> Kabel suplai</label>
       </div>
       <div class="row" style="margin-top:14px">
@@ -174,6 +181,10 @@
           <option value="delta">Segitiga (&Delta;)</option>
         </select>
       </div>
+      <div class="row">
+        <button id="btnFocusTermBox" style="width:100%">🎯 Fokus ke Terminal Box</button>
+      </div>
+      <label class="checks"><input type="checkbox" id="chkLid"> Buka tutup terminal box</label>
     </div>
 
     <div class="sec">

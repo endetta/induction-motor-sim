@@ -352,14 +352,30 @@ export function buildMotor(rotorType = 'cage') {
   }
   root.add(housing);
 
-  // terminal box with 6 pins (U1 V1 W1 / U2 V2 W2), top of casing
+  // terminal box with 6 pins (U1 V1 W1 / U2 V2 W2), top of casing.
+  // Supply cables are CHILDREN of termBox: they ride along when the box lifts
+  // in exploded view, and their far ends land on the U1/V1/W1 bolts.
   const termBox = new THREE.Group();
   const box = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.05, 0.062), mats.termBox);
   box.position.set(0, CASING_R + 0.028, 0.055);
   termBox.add(box);
-  const lid = new THREE.Mesh(new THREE.BoxGeometry(0.083, 0.008, 0.068), mats.foot);
+  // semi-transparent lid — the Star/Delta jumper plate stays visible inside
+  const lidMat = new THREE.MeshStandardMaterial({
+    color: 0x7d8794, metalness: 0.2, roughness: 0.5,
+    transparent: true, opacity: 0.35, depthWrite: false,
+  });
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(0.083, 0.008, 0.068), lidMat);
   lid.position.set(0, CASING_R + 0.056, 0.055);
   termBox.add(lid);
+  // cable glands on the box side wall (three rubber grommets the leads pass through)
+  const glandGeos = [];
+  for (let i = 0; i < 3; i++) {
+    const g = new THREE.CylinderGeometry(0.006, 0.006, 0.012, 10);
+    g.rotateX(Math.PI / 2);
+    g.translate(-0.018 + i * 0.018, CASING_R + 0.026, 0.092);
+    glandGeos.push(g);
+  }
+  termBox.add(new THREE.Mesh(mergeGeometries(glandGeos), mats.brush));
   const pinGeos = [];
   for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++) {
     const g = new THREE.CylinderGeometry(0.0035, 0.0035, 0.014, 10);
@@ -368,6 +384,30 @@ export function buildMotor(rotorType = 'cage') {
   }
   termBox.add(new THREE.Mesh(mergeGeometries(pinGeos), mats.pin));
   housing.add(termBox);
+
+  // ---- supply cables (three colored leads into the terminal box) -----------
+  // Built INSIDE the geometry module so they parent to termBox (Tugas 3.1):
+  // exploded view carries them with the box; ends land on U1/V1/W1 bolts.
+  const cables = new THREE.Group();
+  for (const [i, color] of [[0, 0xd94848], [1, 0xb8860b], [2, 0x2b62b8]]) {
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.1 });
+    // two segments: free lead (world-ish, but grouped) + gland→bolt stub
+    const lead = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.02 + i * 0.02, 0.30, 0.16),
+      new THREE.Vector3(-0.10 + i * 0.06, 0.24, 0.20),
+      new THREE.Vector3(-0.02 + i * 0.02, 0.16, 0.10),
+      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.026, 0.098),
+    ]), 24, 0.004, 6), mat);
+    cables.add(lead);
+    // short stub inside the box: gland → pin (U1/V1/W1 top row)
+    const stub = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.026, 0.086),
+      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.046, 0.062),
+      new THREE.Vector3(-0.018 + i * 0.018, CASING_R + 0.060, 0.038),
+    ]), 12, 0.0032, 6), mat);
+    cables.add(stub);
+  }
+  termBox.add(cables);
 
   // ---- fan cowl + centrifugal fan on the non-drive end (rear, −Z) -----------
   const cowl = new THREE.Group();
@@ -395,7 +435,6 @@ export function buildMotor(rotorType = 'cage') {
   fan.position.z = -CASING_LEN / 2 - 0.060;
   rotor.add(fan);                                  // spins with the rotor
   housing.add(cowl);
-
   // ---- brushes for the wound rotor (stationary → on the rear shield) -------
   if (rotorType === 'wound') {
     const brushes = new THREE.Group();
@@ -410,18 +449,30 @@ export function buildMotor(rotorType = 'cage') {
     shieldRear.add(brushes);
   }
 
+  // ---- keyway (parallel key slot) on the drive-end shaft --------------------
+  // A shallow rectangular key seat visible next to the front shield —
+  // proportional to the shaft (6 × 6 mm key on a 34 mm shaft end).
+  const key = new THREE.Mesh(
+    new THREE.BoxGeometry(0.006, 0.006, 0.045),
+    new THREE.MeshStandardMaterial({ color: 0x9aa3ae, metalness: 0.85, roughness: 0.35 }),
+  );
+  key.position.set(0, SHAFT_R - 0.001, CASING_LEN / 2 + 0.045);
+  rotor.add(key);
+
   // Brass jumper plates — Star (Y): one bar bridging the top row (U2-V2-W2);
   // Delta (Δ): three vertical bars pin-row to pin-row. Swappable at runtime.
   const jumperBrass = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 1.0, roughness: 0.3 });
   function jumperPlates(mode) {
     const geos = [];
     if (mode === 'delta') {
+      // vertical bridges: pin row to pin row (front z=0.038 to rear z=0.072)
       for (let c = 0; c < 3; c++) {
         const g = new THREE.BoxGeometry(0.010, 0.028, 0.005);
         g.translate(-0.018 + c * 0.018, CASING_R + 0.064, 0.055);
         geos.push(g);
       }
     } else {
+      // horizontal bar bridging the rear row (U2-V2-W2)
       const g = new THREE.BoxGeometry(0.052, 0.005, 0.008);
       g.translate(0, CASING_R + 0.073, 0.072);
       geos.push(g);
@@ -461,17 +512,21 @@ export function buildMotor(rotorType = 'cage') {
     explodeF = f;
     shieldFront.position.z = f * 0.16;
     shieldRear.position.z = -f * 0.16;
-    termBox.position.y = f * 0.10;
-    box.position.y = CASING_R + 0.028 + f * 0.10;
-    lid.position.y = CASING_R + 0.056 + f * 0.10;
+    termBox.position.y = f * 0.10;      // cables are termBox children — they ride along
     stator.position.z = f * 0.04;
   }
   setExplode(0);
 
+  // terminal-box lid visibility toggle ("Buka Tutup Terminal Box")
+  function setLidOpen(open) { lid.visible = !open; }
+
   return {
     root, rotor, stator, housing, shieldFront, shieldRear, rotorExtras,
+    termBox, cables, lid,
     phaseMats, mats,
-    setCutaway, setExplode, setJumper: (mode) => {
+    setCutaway, setExplode, setLidOpen,
+    focusTermBox: { x: 0, y: CASING_R + 0.03, z: 0.055 },   // camera-aim target
+    setJumper: (mode) => {
       termBox.remove(jumper);
       jumper.geometry.dispose();
       const next = jumperPlates(mode);

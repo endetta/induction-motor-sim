@@ -6,8 +6,10 @@
  *
  * Exposed bindings (ids in index.html):
  *   sliders:  vph, freq, poles, J, TL, Rr, animSpeed, explode
- *   buttons:  btnStart, btnStop, btnBrake, btnReset, cutaway select
- *   toggles:  chkCasing, chkFins, chkRMF, chkBarI, chkForce, chkStator, chkRing
+ *   buttons:  btnStart, btnStop, btnBrake, btnReset, btnStepMode, btnStepNext,
+ *             cutaway select, jumper select
+ *   toggles:  chkCasing, chkFins, chkRMF, chkBarI, chkForce, chkStator,
+ *             chkPhaseField, chkResultant, chkLid, chkSlowMo (0.1× edukasi slow-mo)
  *   readouts: ro-*, canvas plots: plotSpeed, plotCurrent
  */
 
@@ -24,6 +26,9 @@ export class ControlPanel {
     this.model = model;
     this.hooks = hooks;
     this.animSpeed = 1;
+    this.slowMo = false;      // "Mode Edukasi Slow-Mo" — 0.1× time scale
+    this.stepMode = false;    // "Jeda per Langkah" — physics held between Next
+    this._runGate = null;     // while set, physics runs until it returns true
     this._bindSliders();
     this._bindButtons();
     this._bindToggles();
@@ -37,6 +42,25 @@ export class ControlPanel {
       ['seq6', 'Rotor akselerasi (RK4) menuju kecepatan nominal'],
     ];
     this._seqShown = 0;
+    this._seqRendered = 0;
+    this._phaseStart = 0;   // electrical time when the run began (timed phases)
+    this._tePeak = 0;       // tracked Te max during run-up (step-5 detector)
+    this._bindSeqExtras();
+  }
+
+  _bindSeqExtras() {
+    // Slow-Mo edukasi toggle + step-by-step guide buttons (ids in index.html)
+    $('chkSlowMo').addEventListener('change', (e) => { this.slowMo = e.target.checked; });
+    $('btnStepMode').addEventListener('click', () => {
+      this.stepMode = !this.stepMode;
+      $('btnStepMode').classList.toggle('active-step', this.stepMode);
+      this._runGate = null;
+    });
+    $('btnStepNext').addEventListener('click', () => {
+      if (!this.stepMode) return;
+      const target = Math.min(this._seqShown + 1, 6);
+      this._runGate = () => this._seqShown >= target;
+    });
   }
 
   _bindSliders() {
@@ -67,6 +91,10 @@ export class ControlPanel {
     $('btnStart').addEventListener('click', () => {
       m.start();
       this._seqShown = 0;                    // replay the starting sequence
+      this._seqRendered = 0;
+      this._phaseStart = this.model.time;    // timed-phase anchor at energize
+      this._tePeak = 0;
+      this._runGate = null;                  // clear any held step
     });
     $('btnStop').addEventListener('click', () => m.stop());
     $('btnBrake').addEventListener('click', () => m.brake());
@@ -75,6 +103,10 @@ export class ControlPanel {
       this.plotSpeed.clear();
       this.plotCurrent.clear();
       this._seqShown = 0;
+      this._seqRendered = 0;
+      this._phaseStart = 0;
+      this._tePeak = 0;
+      this._runGate = null;
       this._setSequence(0);
     });
     $('cutaway').addEventListener('change', (e) => this.hooks.onCutaway(e.target.value));
@@ -87,9 +119,12 @@ export class ControlPanel {
     chk('chkFins',   (v) => this.hooks.onVisibility('fins', v));
     chk('chkStator', (v) => this.hooks.onVisibility('stator', v));
     chk('chkRMF',    (v) => this.hooks.onVisibility('rmf', v));
+    chk('chkPhaseField', (v) => this.hooks.onVisibility('phaseField', v));
+    chk('chkResultant', (v) => this.hooks.onVisibility('netField', v));
     chk('chkBarI',   (v) => this.hooks.onVisibility('barCurrent', v));
     chk('chkForce',  (v) => this.hooks.onVisibility('force', v));
-    chk('chkRing',   (v) => this.hooks.onVisibility('speedRing', v));
+    chk('chkLid',    (v) => this.hooks.onLidOpen(v));
+    $('btnFocusTermBox').addEventListener('click', () => this.hooks.onFocusTermBox());
   }
 
   _buildPlots() {
@@ -103,22 +138,40 @@ export class ControlPanel {
     ]);
   }
 
-  /** Starting-sequence callouts: highlight steps 1..6 as physics reaches them. */
+  /** Starting-sequence callouts: true transient-timer state machine, not
+   *  instant step pinning. Phases 1–2 are timed from electrical time (fixed
+   *  stator-field build-up); 3–6 are physical conditions on the live telemetry:
+   *    1  t ∈ [0, 0.2 s]        stator currents flow in
+   *    2  t ∈ [0.2, 0.5 s]      RMF vector established, begins rotating at ωs
+   *    3  s > 0.95              rotor still ≈ standstill, max flux cutting
+   *    4  I at/near its transient inrush peak (locked-rotor level)
+   *    5  accelerating torque Te at its peak during run-up
+   *    6  s < 0.1               steady state reached
+   *  Conditions only advance — a later condition never hides an earlier one. */
   _updateSequence(tel) {
     const run = tel.state === 'running';
-    const done = (c) => { if (run && c && this._seqShown < 6) this._seqShown = Math.max(this._seqShown, 6); };
-    void done;
-    let n = 0;
-    if (run || tel.state === 'braking') {
-      n = 1;                                              // currents flowing
-      if (this.model.time > 0.05) n = 2;                  // RMF established
-      if (tel.s > 0.95) n = Math.max(n, 3);               // rotor still ≈ standstill
-      if (tel.s > 0.90) n = Math.max(n, 4);               // big induced current
-      if (tel.Te > 0.2 * tel.Tmax) n = Math.max(n, 5);    // force/torque built
-      if (tel.s < 0.8) n = 6;                             // accelerating / near speed
-      if (tel.s < 0.05) n = 6;                            // steady state reached
+    if (!run) return;                        // IDLE/BRAKING: keep last shown state
+    const n = this._seqShown;
+    let next = n;
+    if (n < 1) next = 1;                                   // energized → currents flow
+    if (n < 2 && this.model.time - this._phaseStart >= 0.2) next = 2;   // RMF formed
+    if (n < 3 && this.model.time - this._phaseStart >= 0.5) next = 3;   // field cuts rotor
+    if (n < 4 && tel.s > 0.95 && tel.I > 0.5 * tel.Irated) next = 4;    // big induced current
+    if (n < 5) {
+      // Te peak: track the max accelerating torque seen since step 4 armed
+      if (n >= 4 || tel.Te > 0.2 * tel.Tmax) {
+        if (tel.Te > (this._tePeak || 0)) this._tePeak = tel.Te;
+        // peak passed: torque now clearly below its tracked maximum
+        if (this._tePeak > 0.3 * tel.Tmax && tel.Te < 0.8 * this._tePeak) next = Math.max(next, 5);
+      }
     }
-    this._setSequence(n);
+    if (n < 6 && tel.s < 0.1) next = 6;                    // steady state
+    if (next !== n) {
+      this._seqShown = next;
+      // re-anchor the timed phases when a physical condition fires early
+      if (next >= 3) this._phaseStart = this.model.time - 0.5;
+      this._setSequence(next);
+    }
   }
 
   _setSequence(n) {
@@ -130,6 +183,15 @@ export class ControlPanel {
       el.classList.toggle('done', i < n);
       el.classList.toggle('active', i === n - 1);
     }
+  }
+
+  /** Advance-by-gate for step mode: true when physics may integrate this frame.
+   *  In step mode physics is held until "Next" arms a run-until-next-phase gate. */
+  physicsGate() {
+    if (!this.stepMode) return true;
+    if (!this._runGate) return false;
+    if (this._runGate()) { this._runGate = null; return false; }
+    return true;
   }
 
   /** Push one telemetry row into the plots (call at ~30 Hz). */
